@@ -1,0 +1,7 @@
+torch==2.5.0
+torch-geometric==2.6.1
+torchvision==0.20.0
+numpy==2.1.2
+scikit-learn==1.5.2
+matplotlib==3.9.2
+matplotlib-inline==0.1.7
