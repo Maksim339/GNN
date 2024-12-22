@@ -2,13 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-dataset_directory = "pressure_dataset"
+dataset_directory = "pressure_dataset_spe"
 
 
 def visualize_pressure_field(pressure_file_name):
     pressure_file_path = os.path.join(dataset_directory, pressure_file_name)
     sample_idx = pressure_file_name.split('_')[-1].split('.')[0]
-    well_positions_file_path = os.path.join(dataset_directory, f"well_positions_{sample_idx}.npy")
+    well_positions_file_path = os.path.join(dataset_directory, f"metadata_{sample_idx}.npy")
 
     pressure_field = np.load(pressure_file_path)
     print(pressure_field)
@@ -24,8 +24,8 @@ def visualize_pressure_field(pressure_file_name):
     plt.xlabel('x')
     plt.ylabel('y')
 
-    plt.scatter([injection_pos[0]], [injection_pos[1]], color='red', label='Injection Well')
-    plt.scatter([production_pos[0]], [production_pos[1]], color='blue', label='Production Well')
+    plt.scatter([injection_pos[1]], [injection_pos[0]], color='red', label='Injection Well')
+    plt.scatter([production_pos[1]], [production_pos[0]], color='blue', label='Production Well')
 
     plt.legend()
     plt.grid(True)
