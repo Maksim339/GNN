@@ -76,19 +76,19 @@ def solve_pressure_field(
                 continue
 
             if j > 0:
-                k_w = 0.5 * (k_array[i, j] + k_array[i, j - 1])
+                k_w = 2.0 * k_array[i, j] * k_array[i, j - 1] / (k_array[i, j] + k_array[i, j - 1])
             else:
                 k_w = 0.0
             if j < N - 1:
-                k_e = 0.5 * (k_array[i, j] + k_array[i, j + 1])
+                k_e = 2.0 * k_array[i, j] * k_array[i, j + 1] / (k_array[i, j] + k_array[i, j + 1])
             else:
                 k_e = 0.0
             if i > 0:
-                k_n = 0.5 * (k_array[i, j] + k_array[i - 1, j])
+                k_n = 2.0 * k_array[i, j] * k_array[i - 1, j] / (k_array[i, j] + k_array[i - 1, j])
             else:
                 k_n = 0.0
             if i < N - 1:
-                k_s = 0.5 * (k_array[i, j] + k_array[i + 1, j])
+                k_s = 2.0 * k_array[i, j] * k_array[i + 1, j] / (k_array[i, j] + k_array[i + 1, j])
             else:
                 k_s = 0.0
             A[center_index, center_index] = (k_w + k_e + k_n + k_s)
