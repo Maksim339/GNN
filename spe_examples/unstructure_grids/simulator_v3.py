@@ -21,11 +21,13 @@ def build_cell_data(points, triangles, k_vertex, phi_vertex):
     phi_cells = np.zeros(M)
 
     for i, tri in enumerate(triangles):
-        v0, v1, v2 = tri
-        k_harm = 3 / (1 / k_vertex[v0] + 1 / k_vertex[v1] + 1 / k_vertex[v2])
+        k_harm = 3 / (
+            1 / k_vertex[tri[0]] + 1 / k_vertex[tri[1]] + 1 / k_vertex[tri[2]] + 1e-12
+        )
         k_cells[i] = k_harm
-
-        phi_cells[i] = (phi_vertex[v0] + phi_vertex[v1] + phi_vertex[v2]) / 3
+        phi_cells[i] = (
+            phi_vertex[tri[0]] + phi_vertex[tri[1]] + phi_vertex[tri[2]]
+        ) / 3
         cell_centers[i] = points[tri, :2].mean(axis=0)
 
     return cell_centers, k_cells, phi_cells
@@ -48,88 +50,91 @@ def build_connectivity(points, cell_centers, triangles):
             p2 = points[edge[1], :2]
 
             edge_vec = p2 - p1
+            L_edge = np.linalg.norm(edge_vec)
+            if L_edge == 0:
+                continue
             normal = np.array([edge_vec[1], -edge_vec[0]])
             norm_length = np.linalg.norm(normal)
-            if norm_length == 0:
-                continue
-            normal /= norm_length
-
+            if norm_length != 0:
+                normal /= norm_length
             center_i = cell_centers[i]
             face_center = 0.5 * (p1 + p2)
             if np.dot(normal, face_center - center_i) > 0:
                 normal = -normal
 
-            face_info[i].append((j, normal))
-            face_info[j].append((i, -normal))
-
+            face_info[i].append((j, normal, L_edge))
+            face_info[j].append((i, -normal, L_edge))
     return face_info
 
 
+def harmonic_avg(a, b, eps=1e-12):
+    return 2 * a * b / (a + b + eps)
+
+
 def assemble_pressure_system(
-    cell_centers, face_info, k_cells, phi, Sw, mu_w, mu_o, wells, dt
+    cell_centers, face_info, k_cells, Sw, mu_w, mu_o, wells, p_inj, p_prod
 ):
     M = len(cell_centers)
     A = sp.lil_matrix((M, M))
     b = np.zeros(M)
-
+    eps = 1e-12
     krw, kro = rel_perm(Sw)
     lambda_t = krw / mu_w + kro / mu_o
 
     for i in range(M):
-        for j, n in face_info[i]:
-            dx = cell_centers[j] - cell_centers[i]
-            dist = np.linalg.norm(dx)
-            if dist == 0:
+        for j, normal, L_edge in face_info[i]:
+            if j <= i:
                 continue
-
-            lambda_avg = (
-                2 * lambda_t[i] * lambda_t[j] / (lambda_t[i] + lambda_t[j] + 1e-12)
-            )
-            T = lambda_avg / dist
-
-            flux_coeff = T * np.dot(n, dx / dist)
-
-            A[i, i] += flux_coeff
-            A[i, j] -= flux_coeff
-
-        if i == wells["inj"]["cell"]:
-            b[i] += wells["inj"]["rate"]
-        if i == wells["prod"]["cell"]:
-            b[i] += wells["prod"]["rate"]
-
+            d = np.linalg.norm(cell_centers[j] - cell_centers[i])
+            if d < eps:
+                continue
+            k_avg = harmonic_avg(k_cells[i], k_cells[j], eps)
+            lambda_avg = harmonic_avg(lambda_t[i], lambda_t[j], eps)
+            T_ij = (L_edge / d) * k_avg * lambda_avg
+            A[i, i] += T_ij
+            A[j, j] += T_ij
+            A[i, j] -= T_ij
+            A[j, i] -= T_ij
+    inj_cell = wells["inj"]["cell"]
+    A[inj_cell, :] = 0
+    A[inj_cell, inj_cell] = 1.0
+    b[inj_cell] = p_inj
+    prod_cell = wells["prod"]["cell"]
+    A[prod_cell, :] = 0
+    A[prod_cell, prod_cell] = 1.0
+    b[prod_cell] = p_prod
     return A.tocsr(), b
 
 
-def solve_transport(cell_centers, face_info, phi, Sw, p, mu_w, dt):
+def solve_transport(cell_centers, face_info, k_cells, phi, Sw, p, mu_w, wells, dt):
     M = len(cell_centers)
-    Sw_new = Sw.copy()
-    krw, kro = rel_perm(Sw)
+    net_flux = np.zeros(M)
+    eps = 1e-12
+    krw, _ = rel_perm(Sw)
     lambda_w = krw / mu_w
-
+    inj_cell = wells["inj"]["cell"]
+    lambda_w[inj_cell] = 1.0 / mu_w
     for i in range(M):
-        flux = 0.0
-        for j, n in face_info[i]:
-            dp = p[i] - p[j]
-            if dp >= 0:
-                kr = krw[i]
-                lambda_up = lambda_w[i]
-            else:
-                kr = krw[j]
-                lambda_up = lambda_w[j]
-
-            dx = cell_centers[j] - cell_centers[i]
-            dist = np.linalg.norm(dx)
-            if dist == 0:
+        for j, normal, L_edge in face_info[i]:
+            if j <= i:
                 continue
-
-            lambda_avg = 2 * lambda_up * lambda_w[j] / (lambda_up + lambda_w[j] + 1e-12)
-            T = lambda_avg / dist
-
-            flux += T * dp
-
-        Sw_new[i] = Sw[i] + (dt / phi[i]) * flux
-
-    return np.clip(Sw_new, 0.0, 1.0)
+            d = np.linalg.norm(cell_centers[j] - cell_centers[i])
+            if d < eps:
+                continue
+            k_avg = harmonic_avg(k_cells[i], k_cells[j], eps)
+            dp = p[i] - p[j]
+            if dp > 0:
+                lam_up = lambda_w[i]
+            else:
+                lam_up = lambda_w[j]
+            T_w = (L_edge / d) * k_avg * lam_up
+            F = T_w * dp
+            net_flux[i] -= F
+            net_flux[j] += F
+    Sw_new = Sw + dt * (net_flux / phi)
+    Sw_new[inj_cell] = 1.0
+    Sw_new = np.clip(Sw_new, 0.0, 1.0)
+    return Sw_new
 
 
 def interpolate_to_vertices(points, triangles, cell_data):
@@ -157,17 +162,16 @@ def plot_results(points, triangles, cell_pressure, cell_saturation):
     plt.colorbar(tcf, label="P")
     plt.tricontour(tri, pressure_vertices, colors="k", linewidths=0.5, levels=10)
     plt.title("Распределение давления")
-
     plt.subplot(122)
     tcf = plt.tricontourf(tri, saturation_vertices, levels=20, cmap="Blues")
     plt.colorbar(tcf, label="S_w")
     plt.tricontour(tri, saturation_vertices, colors="k", linewidths=0.5, levels=10)
     plt.title("Распределение насыщенности")
-
     plt.tight_layout()
     plt.show()
 
 
+# -----------------------------------------------------------------------
 mesh_perm = meshio.read("mesh_perm.vtk")
 mesh_phi = meshio.read("mesh_phi.vtk")
 points = mesh_perm.points[:, :2]
@@ -180,41 +184,47 @@ for cell_block in mesh_perm.cells:
 if triangles is None:
     raise ValueError("Треугольные элементы не найдены!")
 
-# ---------------------------------------------------------------------------
 mu_w = 0.001
 mu_o = 1.0
 dt = 0.01
 total_time = 5.0
 num_steps = int(total_time / dt)
 
-wells = {"inj": {"cell": 233, "rate": 1e-3}, "prod": {"cell": 114, "rate": -1e-3}}
+wells = {"inj": {"cell": 233}, "prod": {"cell": 114}}
+p_inj = 10.0
+p_prod = 0.0
 
 cell_centers, k_cells, phi_cells = build_cell_data(
     points, triangles, mesh_perm.point_data["PERMEABILITY"], mesh_phi.point_data["PHI"]
 )
-
 face_info = build_connectivity(points, cell_centers, triangles)
 
-Sw = np.zeros(len(cell_centers))
-Sw[:] = 0.2
+Sw = np.full(len(cell_centers), 0.2)
 Sw[wells["inj"]["cell"]] = 1.0
 p = np.zeros(len(cell_centers))
 
 for step in range(num_steps):
     A_p, b_p = assemble_pressure_system(
-        cell_centers, face_info, k_cells, phi_cells, Sw, mu_w, mu_o, wells, dt
+        cell_centers,
+        face_info,
+        k_cells,
+        Sw,
+        mu_w,
+        mu_o,
+        wells,
+        p_inj,
+        p_prod,
     )
     p = spla.spsolve(A_p, b_p)
-
-    Sw_new = solve_transport(cell_centers, face_info, phi_cells, Sw, p, mu_w, dt)
-
+    Sw_new = solve_transport(
+        cell_centers, face_info, k_cells, phi_cells, Sw, p, mu_w, wells, dt
+    )
     Sw = Sw_new
-
-    print(f"Шаг {step + 1}: Насыщенность [{Sw.min():.3f}, {Sw.max():.3f}]")
+    print(f"Шаг {step+1}: S_w min = {Sw.min():.3f}, max = {Sw.max():.3f}")
 
 plot_results(points, triangles, p, Sw)
 
 mesh_out = meshio.Mesh(
     points, [("triangle", triangles)], cell_data={"Pressure": [p], "Saturation": [Sw]}
 )
-mesh_out.write("results.vtk")
+mesh_out.write("results1.vtk")
