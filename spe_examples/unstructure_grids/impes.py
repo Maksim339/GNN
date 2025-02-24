@@ -132,8 +132,9 @@ def solve_transport(
 
     Sw_new = Sw + dt * (net_flux / phi)
     inj_cell = wells["inj"]["cell"]
-    # Для нагнетательной скважины насыщенность принудительно равна 1
+    prod_cell = wells["prod"]["cell"]
     Sw_new[inj_cell] = 1.0
+    Sw_new[prod_cell] = 0.0
     Sw_new = np.clip(Sw_new, 0.0, 1.0)
     return Sw_new
 
@@ -181,8 +182,8 @@ if triangles is None:
 
 mu_w = 0.001
 mu_o = 1.0
-dt = 0.0001
-total_time = 0.1
+dt = 0.00001
+total_time = 0.01
 num_steps = int(total_time / dt)
 
 wells = {"inj": {"cell": 195}, "prod": {"cell": 168}}
